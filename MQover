@@ -1,0 +1,108 @@
+import board
+import time
+import random
+from adafruit_motorkit import MotorKit
+from evdev import InputDevice, ecodes
+import paho.mqtt.client as mqtt
+
+# Initialize the motor HAT
+try:
+    kit = MotorKit(i2c=board.I2C())
+except Exception as e:
+    print("Error initializing motor HAT:", e)
+    exit()
+
+# Define broker parameters
+broker_address = "172.20.10.6"  # Ethan IP
+broker_port = 1883
+fleet_topic_base = "fleet/SpaceDig"
+
+# Callbacks for MQTT
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
+        print("Connected to the broker with client_id handshake successful")
+    else:
+        print(f"Connection to the broker failed with result code {rc}")
+
+def on_message(client, userdata, msg):
+    print(f"Received message on topic {msg.topic}: {msg.payload.decode()}")
+
+# MQTT client setup
+client = mqtt.Client(client_id="Robotics_Space_Dig")
+client.on_connect = on_connect
+client.on_message = on_message
+
+# Attempt to connect to the broker
+try:
+    client.connect(broker_address, broker_port, 60)
+    client.loop_start()
+except Exception as e:
+    print("Error connecting to broker:", e)
+    exit()
+
+# Simulate Space Dig vehicles
+vehicle_ids = ["ExcavatorA", "Surveyor", "ExcavatorB"]
+while True:
+    for vehicle_id in vehicle_ids:
+        location = {"latitude": random.uniform(30.0, 40.0), "longitude": random.uniform(-90.0, -80.0)}
+        location_topic = f"{fleet_topic_base}/{vehicle_id}/location"
+        client.publish(location_topic, str(location))
+        print(f"Published data for {vehicle_id}: Location - {location}")
+    time.sleep(5)  # Publish every 5 seconds
+
+# Initialize the gamepad
+try:
+    gamepad = InputDevice('/dev/input/event4')  # Adjust event number as needed
+except Exception as e:
+    print("Error initializing gamepad:", e)
+    exit()
+
+# Control function for tank
+def control_tank():
+    # Function for setting motor speed
+    def set_motor_speed(left_speed, right_speed):
+        kit.motor1.throttle = left_speed
+        kit.motor2.throttle = left_speed
+        kit.motor3.throttle = -right_speed
+        kit.motor4.throttle = -right_speed
+
+    left_speed = 0.0
+    right_speed = 0.0
+    boost_active = False
+    try:
+        for event in gamepad.read_loop():
+            if event.type == ecodes.EV_ABS:
+                if event.code == 1:  # Left stick Y-axis
+                    left_y = event.value
+                    if 30000 <= left_y <= 37000:  # Left stick deadzone
+                        left_speed = 0.0
+                    else:
+                        left_speed = (left_y - 32767) / 32767.0
+
+                if event.code == 5:  # Right stick Y-axis
+                    right_y = event.value
+                    if 30000 <= right_y <= 37000:  # Right stick deadzone
+                        right_speed = 0.0
+                    else:
+                        right_speed = (right_y - 32767) / 32767.0
+
+                if event.code == 9:  # Right trigger for boost
+                    boost_active = event.value > 500
+
+                # Set motor speed with boost control
+                set_motor_speed(left_speed, right_speed)
+
+    except KeyboardInterrupt:
+        # Stop the motors and perform cleanup tasks
+        set_motor_speed(0, 0)  # Stop the motors
+        print("Keyboard interrupt detected. Stopping motors.")
+        print("\nDisconnecting from the broker...")
+        client.disconnect()
+        client.loop_stop()
+
+if __name__ == "__main__":
+    print("Move both analog sticks to find the center positions...")
+    try:
+        control_tank()
+    except Exception as e:
+        print("Error:", e)
